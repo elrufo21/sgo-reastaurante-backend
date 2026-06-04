@@ -1,0 +1,58 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Publish and generated artifacts
+[Pp]ublish/
+[Aa]rtifacts/
+.tmp_build_api/
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.trx
+
+# Visual Studio / Rider / VS Code local files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+
+# .NET tooling
+project.lock.json
+project.fragment.lock.json
+artifacts/
+*.nupkg
+*.snupkg
+*.nuspec
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.local.json
+secrets.json
+
+# Database and backup files
+*.bak
+*.backup
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# NuGet packages restored by tooling
+packages/
+*.nuget.props
+*.nuget.targets
