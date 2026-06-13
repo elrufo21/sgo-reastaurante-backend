@@ -25,7 +25,16 @@ public class UsuarioRepository : IUsuario
 
     public async Task<AuthResponseA> LoginAsync(EUser loginUser, CancellationToken cancellationToken = default)
     {
-        var data = $"{loginUser.Email}|{loginUser.Password}";
+        var usuario = string.IsNullOrWhiteSpace(loginUser.Email)
+            ? loginUser.Username
+            : loginUser.Email;
+
+        if (string.IsNullOrWhiteSpace(usuario) || string.IsNullOrWhiteSpace(loginUser.Password))
+        {
+            throw new UnauthorizedAccessException("Acceso denegado, usuario y clave son requeridos.");
+        }
+
+        var data = $"{usuario}|{loginUser.Password}";
         var result = await _accesoDatos.EjecutarComandoAsync("uspValidaUsuario", "@Data", data, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(result))
@@ -48,13 +57,16 @@ public class UsuarioRepository : IUsuario
         var nowUtc = DateTime.UtcNow;
         var expiresAtUtc = nowUtc.Add(_jwtSettings.ExpireTime);
         var expiresInSeconds = (int)_jwtSettings.ExpireTime.TotalSeconds;
+        var usuarioId = GetPayloadValue(payload, 0);
+        var companiaId = GetPayloadValue(payload, 4);
+
         return new AuthResponseA
         {
-            Id = GetPayloadValue(payload, 0),
+            Id = usuarioId,
             PersonalId = GetPayloadValue(payload, 1),
             Area = GetPayloadValue(payload, 2),
             Usuario = GetPayloadValue(payload, 3),
-            CompaniaId = GetPayloadValue(payload, 4),
+            CompaniaId = companiaId,
             RazonSocial = GetPayloadValue(payload, 5),
             FechaVencimientoClave = GetPayloadValue(payload, 6, null),
             DescuentoMax = GetPayloadValue(payload, 7, "0"),
@@ -69,7 +81,7 @@ public class UsuarioRepository : IUsuario
             Entorno = GetPayloadValue(payload, 16, "3"),
             CompaniaTelefono = GetPayloadValue(payload, 17),
             BoletaPorLote = ParseBoolFlag(GetPayloadValue(payload, 18, "1")),
-            Token = _authService.CreateTokenA(expiresAtUtc.ToString("O")),
+            Token = _authService.CreateTokenA(expiresAtUtc.ToString("O"), usuarioId, companiaId),
             ExpiresAtUtc = expiresAtUtc,
             ExpiresInSeconds = expiresInSeconds
         };

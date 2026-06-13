@@ -20,8 +20,16 @@ public class UserController : ControllerBase
     [AllowAnonymous]
     [HttpPost("acceso", Name = "Acceso")]
     [ProducesResponseType((int)HttpStatusCode.OK)]
+    [ProducesResponseType((int)HttpStatusCode.Unauthorized)]
     public async Task<ActionResult<AuthResponseA>> Acceso([FromBody] EUser request, CancellationToken cancellationToken)
     {
-        return Ok(await _mediator.LoginAsync(request, cancellationToken));
+        try
+        {
+            return Ok(await _mediator.LoginAsync(request, cancellationToken));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Unauthorized(new { message = ex.Message });
+        }
     }
 }

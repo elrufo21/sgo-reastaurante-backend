@@ -50,12 +50,21 @@ public class AuthService : IAuthService
         return tokenHandler.WriteToken(token);
     }
     
-    public string CreateTokenA(string? fecha)
+    public string CreateTokenA(string? fecha, string? usuarioId = null, string? companiaId = null)
     {
         var claims = new List<Claim>();
         
         var claim = new Claim(ClaimTypes.UserData,fecha!);
         claims.Add(claim);
+        if (!string.IsNullOrWhiteSpace(usuarioId))
+        {
+            claims.Add(new Claim("userId", usuarioId));
+        }
+
+        if (!string.IsNullOrWhiteSpace(companiaId))
+        {
+            claims.Add(new Claim("companiaId", companiaId));
+        }
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.Key!));
         var credenciales = new SigningCredentials(key, SecurityAlgorithms.HmacSha512Signature);

@@ -328,6 +328,183 @@ public class NotaController : ControllerBase
     }
 
     [AllowAnonymous]
+    [HttpGet("factura/servicio/list", Name = "GetFacturaServicioList")]
+    [ProducesResponseType(typeof(FacturaServicioListResponse), (int)HttpStatusCode.OK)]
+    [ProducesResponseType((int)HttpStatusCode.BadRequest)]
+    public async Task<IActionResult> ListarFacturasServicio(
+        [FromQuery] DateTime? fechaInicio,
+        [FromQuery] DateTime? fechaFin,
+        [FromQuery] string? estadoSunat = null,
+        [FromQuery] bool soloServicios = true,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        if (fechaInicio.HasValue && fechaFin.HasValue && fechaInicio.Value.Date > fechaFin.Value.Date)
+        {
+            return BadRequest("fechaInicio no puede ser mayor que fechaFin.");
+        }
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+
+        var connectionString = _configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return StatusCode((int)HttpStatusCode.InternalServerError, new
+            {
+                ok = false,
+                mensaje = "No se encontró la cadena de conexión."
+            });
+        }
+
+        const string sql = """
+            WITH Base AS
+            (
+                SELECT
+                    d.DocuId,
+                    d.NotaId,
+                    d.CompaniaId,
+                    c.CompaniaRazonSocial AS Compania,
+                    d.ClienteId,
+                    cl.ClienteRazon AS Cliente,
+                    cl.ClienteRuc AS Ruc,
+                    d.DocuEmision,
+                    d.DocuRegistro,
+                    d.DocuDocumento,
+                    d.DocuSerie,
+                    d.DocuNumero,
+                    LTRIM(RTRIM(d.TipoCodigo)) AS TipoCodigo,
+                    d.DocuCondicion,
+                    d.DocuUsuario,
+                    d.DocuEstado,
+                    d.EstadoSunat,
+                    d.CodigoSunat,
+                    d.MensajeSunat,
+                    d.DocuHash,
+                    d.DocuSubTotal,
+                    d.DocuIgv,
+                    d.ICBPER,
+                    d.DocuTotal,
+                    d.DocuSaldo,
+                    d.DocuConcepto,
+                    n.NotaFormaPago,
+                    n.NotaCondicion,
+                    (
+                        SELECT COUNT(1)
+                        FROM DetallePedido dp
+                        WHERE dp.NotaId = d.NotaId
+                    ) AS TotalDetalles,
+                    (
+                        SELECT TOP (1) dp.DetalleDescripcion
+                        FROM DetallePedido dp
+                        WHERE dp.NotaId = d.NotaId
+                        ORDER BY dp.DetalleId
+                    ) AS PrimerDetalle,
+                    CASE
+                        WHEN EXISTS
+                        (
+                            SELECT 1
+                            FROM DetallePedido dp
+                            LEFT JOIN Producto p ON p.IdProducto = dp.IdProducto
+                            WHERE dp.NotaId = d.NotaId
+                              AND (
+                                    UPPER(LTRIM(RTRIM(ISNULL(dp.DetalleUm, '')))) IN ('ZZ', 'SERV', 'SERVICIO', 'SERVICIOS')
+                                 OR UPPER(LTRIM(RTRIM(ISNULL(p.ProductoUM, '')))) IN ('ZZ', 'SERV', 'SERVICIO', 'SERVICIOS')
+                              )
+                        )
+                        THEN CAST(1 AS bit)
+                        ELSE CAST(0 AS bit)
+                    END AS EsServicio
+                FROM DocumentoVenta d
+                LEFT JOIN Cliente cl ON cl.ClienteId = d.ClienteId
+                LEFT JOIN Compania c ON c.CompaniaId = d.CompaniaId
+                LEFT JOIN NotaPedido n ON n.NotaId = d.NotaId
+                WHERE LTRIM(RTRIM(d.TipoCodigo)) = '01'
+                  AND (@FechaInicio IS NULL OR d.DocuEmision >= @FechaInicio)
+                  AND (@FechaFin IS NULL OR d.DocuEmision <= @FechaFin)
+                  AND (@EstadoSunat = '' OR UPPER(LTRIM(RTRIM(ISNULL(d.EstadoSunat, '')))) = @EstadoSunat)
+            ),
+            Filtrado AS
+            (
+                SELECT *
+                FROM Base
+                WHERE @SoloServicios = 0 OR EsServicio = 1
+            ),
+            Paginado AS
+            (
+                SELECT
+                    *,
+                    COUNT(1) OVER() AS TotalRegistros,
+                    ROW_NUMBER() OVER(ORDER BY DocuEmision DESC, DocuId DESC) AS RowNumber
+                FROM Filtrado
+            )
+            SELECT *
+            FROM Paginado
+            WHERE RowNumber BETWEEN @RowStart AND @RowEnd
+            ORDER BY RowNumber;
+            """;
+
+        var items = new List<FacturaServicioListItem>();
+        var total = 0;
+        await using var con = new SqlConnection(connectionString);
+        await con.OpenAsync(cancellationToken);
+        await using var cmd = new SqlCommand(sql, con);
+        cmd.Parameters.AddWithValue("@FechaInicio", fechaInicio.HasValue ? fechaInicio.Value.Date : DBNull.Value);
+        cmd.Parameters.AddWithValue("@FechaFin", fechaFin.HasValue ? fechaFin.Value.Date : DBNull.Value);
+        cmd.Parameters.AddWithValue("@EstadoSunat", (estadoSunat ?? string.Empty).Trim().ToUpperInvariant());
+        cmd.Parameters.AddWithValue("@SoloServicios", soloServicios);
+        cmd.Parameters.AddWithValue("@RowStart", ((page - 1) * pageSize) + 1);
+        cmd.Parameters.AddWithValue("@RowEnd", page * pageSize);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            total = reader["TotalRegistros"] == DBNull.Value ? total : Convert.ToInt32(reader["TotalRegistros"]);
+            items.Add(new FacturaServicioListItem
+            {
+                DocuId = ToLong(reader["DocuId"]),
+                NotaId = ToLong(reader["NotaId"]),
+                CompaniaId = ToInt(reader["CompaniaId"]),
+                Compania = ToStringOrEmpty(reader["Compania"]),
+                ClienteId = ToLong(reader["ClienteId"]),
+                Cliente = ToStringOrEmpty(reader["Cliente"]),
+                Ruc = ToStringOrEmpty(reader["Ruc"]),
+                FechaEmision = ToDateOnlyString(reader["DocuEmision"]),
+                FechaRegistro = ToDateTimeIsoString(reader["DocuRegistro"]),
+                Documento = ToStringOrEmpty(reader["DocuDocumento"]),
+                Numero = $"{ToStringOrEmpty(reader["DocuSerie"]).Trim()}-{ToStringOrEmpty(reader["DocuNumero"]).Trim()}",
+                TipoCodigo = ToStringOrEmpty(reader["TipoCodigo"]),
+                Condicion = ToStringOrEmpty(reader["DocuCondicion"]),
+                FormaPago = ToStringOrEmpty(reader["NotaFormaPago"]),
+                Usuario = ToStringOrEmpty(reader["DocuUsuario"]),
+                DocuEstado = ToStringOrEmpty(reader["DocuEstado"]),
+                EstadoSunat = ToStringOrEmpty(reader["EstadoSunat"]),
+                CodigoSunat = ToStringOrEmpty(reader["CodigoSunat"]),
+                MensajeSunat = ToStringOrEmpty(reader["MensajeSunat"]),
+                Hash = ToStringOrEmpty(reader["DocuHash"]),
+                SubTotal = ToDecimal(reader["DocuSubTotal"]),
+                Igv = ToDecimal(reader["DocuIgv"]),
+                Icbper = ToDecimal(reader["ICBPER"]),
+                Total = ToDecimal(reader["DocuTotal"]),
+                Saldo = ToDecimal(reader["DocuSaldo"]),
+                Concepto = ToStringOrEmpty(reader["DocuConcepto"]),
+                TotalDetalles = ToInt(reader["TotalDetalles"]),
+                PrimerDetalle = ToStringOrEmpty(reader["PrimerDetalle"]),
+                EsServicio = reader["EsServicio"] != DBNull.Value && Convert.ToBoolean(reader["EsServicio"])
+            });
+        }
+
+        return Ok(new FacturaServicioListResponse
+        {
+            Page = page,
+            PageSize = pageSize,
+            Total = total,
+            Items = items
+        });
+    }
+
+    [AllowAnonymous]
     [HttpGet("{id:long}", Name = "GetNotaPedidoById")]
     [ProducesResponseType(typeof(NotaPedido), (int)HttpStatusCode.OK)]
     public async Task<ActionResult<NotaPedido?>> ObtenerNotaPedido(long id, CancellationToken cancellationToken)
@@ -1229,6 +1406,63 @@ public class NotaController : ControllerBase
             return StatusCode((int)HttpStatusCode.InternalServerError, NormalizarRespuestaFactura(
                 null,
                 $"Error al enviar factura: {ex.Message}"));
+        }
+    }
+
+    [AllowAnonymous]
+    [HttpPost("factura/servicio/enviar", Name = "EnviarFacturaServicioElectronica")]
+    [ProducesResponseType((int)HttpStatusCode.OK)]
+    [ProducesResponseType((int)HttpStatusCode.BadRequest)]
+    [ProducesResponseType((int)HttpStatusCode.InternalServerError)]
+    public async Task<IActionResult> EnviarFacturaServicioElectronica([FromBody] EnviarFacturaRequest? request, CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return BadRequest(new
+            {
+                ok = false,
+                mensaje = "Payload requerido.",
+                errores = new[] { "El body del request es obligatorio." }
+            });
+        }
+
+        if (TryAplicarErrorForzadoEnvioDocumento("factura/servicio/enviar", out var respuestaForzadaFacturaServicio))
+        {
+            return respuestaForzadaFacturaServicio!;
+        }
+
+        var requestFactura = NormalizarRequestFacturaServicio(request);
+        var errores = ValidarRequestFactura(requestFactura);
+        if (errores.Count > 0)
+        {
+            return BadRequest(new
+            {
+                ok = false,
+                mensaje = "Existen campos obligatorios faltantes o inválidos para enviar la factura de servicios.",
+                errores
+            });
+        }
+
+        var tipoProceso = ParseTipoProceso(requestFactura.TIPO_PROCESO);
+        if (!tipoProceso.HasValue || tipoProceso.Value < 1 || tipoProceso.Value > 3)
+        {
+            return BadRequest(new
+            {
+                ok = false,
+                mensaje = "TIPO_PROCESO inválido.",
+                errores = new[] { "TIPO_PROCESO debe ser 1 (producción), 2 (homologación) o 3 (beta)." }
+            });
+        }
+
+        try
+        {
+            return Ok(await EjecutarEnvioFacturaAsync(requestFactura, tipoProceso.Value, cancellationToken));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode((int)HttpStatusCode.InternalServerError, NormalizarRespuestaFactura(
+                null,
+                $"Error al enviar factura de servicios: {ex.Message}"));
         }
     }
 
@@ -3090,6 +3324,21 @@ public class NotaController : ControllerBase
         return request;
     }
 
+    private static EnviarFacturaRequest NormalizarRequestFacturaServicio(EnviarFacturaRequest request)
+    {
+        request = NormalizarRequestFactura(request);
+
+        foreach (var item in request.detalle ?? Enumerable.Empty<EnviarFacturaDetalleRequest>())
+        {
+            if (item is not null)
+            {
+                item.unidadMedida = "ZZ";
+            }
+        }
+
+        return request;
+    }
+
     private static EnviarFacturaRequest NormalizarRequestBoleta(EnviarFacturaRequest request)
     {
         request.COD_TIPO_DOCUMENTO = "03";
@@ -3526,6 +3775,8 @@ public class NotaController : ControllerBase
 
         var mensajeSunat = ObtenerValorLegacy(respuestaLegacy, "msj_sunat");
         var hashCpe = ObtenerValorLegacy(respuestaLegacy, "hash_cpe");
+        var marcarDetalleComoServicio = request.detalle?.Any(x =>
+            string.Equals((x.unidadMedida ?? string.Empty).Trim(), "ZZ", StringComparison.OrdinalIgnoreCase)) == true;
 
         return await RegistrarDocumentoVentaEnviadoAsync(
             request.NOTA_ID,
@@ -3535,7 +3786,8 @@ public class NotaController : ControllerBase
             mensajeSunat,
             hashCpe,
             cancellationToken,
-            "factura");
+            "factura",
+            marcarDetalleComoServicio);
     }
 
     private async Task<object> RegistrarBoletaEnBaseDatosAsync(
@@ -3584,7 +3836,8 @@ public class NotaController : ControllerBase
         string? mensajeSunat,
         string? hashCpe,
         CancellationToken cancellationToken,
-        string descripcionDocumento)
+        string descripcionDocumento,
+        bool marcarDetalleComoServicio = false)
     {
         var notaId = notaIdInput.GetValueOrDefault();
         var docuId = docuIdInput.GetValueOrDefault();
@@ -3642,6 +3895,12 @@ public class NotaController : ControllerBase
               AND DetalleEstado = 'PENDIENTE';
             """;
 
+        const string sqlMarcarDetalleServicio = """
+            UPDATE DetallePedido
+            SET DetalleUm = 'ZZ'
+            WHERE NotaId = @NotaId;
+            """;
+
         try
         {
             await using var con = new SqlConnection(connectionString);
@@ -3674,6 +3933,13 @@ public class NotaController : ControllerBase
                 await using var cmdDetalle = new SqlCommand(sqlActualizarDetalle, con, (SqlTransaction)tx);
                 cmdDetalle.Parameters.AddWithValue("@NotaId", notaId);
                 await cmdDetalle.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (notaId > 0 && tipoCodigo == "01" && marcarDetalleComoServicio)
+            {
+                await using var cmdDetalleServicio = new SqlCommand(sqlMarcarDetalleServicio, con, (SqlTransaction)tx);
+                cmdDetalleServicio.Parameters.AddWithValue("@NotaId", notaId);
+                await cmdDetalleServicio.ExecuteNonQueryAsync(cancellationToken);
             }
 
             await tx.CommitAsync(cancellationToken);
@@ -5514,6 +5780,11 @@ public class NotaController : ControllerBase
             "UNIDAD" => "NIU",
             "UNIDADES" => "NIU",
             "NIU" => "NIU",
+            "SERV" => "ZZ",
+            "SERVICIO" => "ZZ",
+            "SERVICIOS" => "ZZ",
+            "SERVICE" => "ZZ",
+            "ZZ" => "ZZ",
             "CAJA" => "BX",
             "CAJAS" => "BX",
             "BX" => "BX",
@@ -6759,6 +7030,36 @@ public class NotaController : ControllerBase
         return null;
     }
 
+    private static string ToStringOrEmpty(object value)
+    {
+        return value == DBNull.Value ? string.Empty : value.ToString() ?? string.Empty;
+    }
+
+    private static long ToLong(object value)
+    {
+        return value == DBNull.Value ? 0L : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    private static int ToInt(object value)
+    {
+        return value == DBNull.Value ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static decimal ToDecimal(object value)
+    {
+        return value == DBNull.Value ? 0m : Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+    }
+
+    private static string ToDateOnlyString(object value)
+    {
+        return value == DBNull.Value ? string.Empty : Convert.ToDateTime(value, CultureInfo.InvariantCulture).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static string ToDateTimeIsoString(object value)
+    {
+        return value == DBNull.Value ? string.Empty : Convert.ToDateTime(value, CultureInfo.InvariantCulture).ToString("O", CultureInfo.InvariantCulture);
+    }
+
     private static string ObtenerValorLegacy(Dictionary<string, string>? data, string key, string fallback = "")
     {
         if (data is null)
@@ -7151,6 +7452,47 @@ public class ListaDocumentosRequest
 public class ListaBajasRequest
 {
     public string Data { get; set; } = string.Empty;
+}
+
+public class FacturaServicioListResponse
+{
+    public int Page { get; set; }
+    public int PageSize { get; set; }
+    public int Total { get; set; }
+    public List<FacturaServicioListItem> Items { get; set; } = new();
+}
+
+public class FacturaServicioListItem
+{
+    public long DocuId { get; set; }
+    public long NotaId { get; set; }
+    public int CompaniaId { get; set; }
+    public string Compania { get; set; } = string.Empty;
+    public long ClienteId { get; set; }
+    public string Cliente { get; set; } = string.Empty;
+    public string Ruc { get; set; } = string.Empty;
+    public string FechaEmision { get; set; } = string.Empty;
+    public string FechaRegistro { get; set; } = string.Empty;
+    public string Documento { get; set; } = string.Empty;
+    public string Numero { get; set; } = string.Empty;
+    public string TipoCodigo { get; set; } = string.Empty;
+    public string Condicion { get; set; } = string.Empty;
+    public string FormaPago { get; set; } = string.Empty;
+    public string Usuario { get; set; } = string.Empty;
+    public string DocuEstado { get; set; } = string.Empty;
+    public string EstadoSunat { get; set; } = string.Empty;
+    public string CodigoSunat { get; set; } = string.Empty;
+    public string MensajeSunat { get; set; } = string.Empty;
+    public string Hash { get; set; } = string.Empty;
+    public decimal SubTotal { get; set; }
+    public decimal Igv { get; set; }
+    public decimal Icbper { get; set; }
+    public decimal Total { get; set; }
+    public decimal Saldo { get; set; }
+    public string Concepto { get; set; } = string.Empty;
+    public int TotalDetalles { get; set; }
+    public string PrimerDetalle { get; set; } = string.Empty;
+    public bool EsServicio { get; set; }
 }
 
 public class RegistrarResumenBoletasRequest
