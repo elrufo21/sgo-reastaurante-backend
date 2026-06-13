@@ -47,9 +47,12 @@ builder.Services.AddProblemDetails();
 builder.Services.Configure<SunatOptions>(builder.Configuration.GetSection(SunatOptions.SectionName));
 builder.Services.AddHttpClient("SunatAuth");
 builder.Services.AddHttpClient("Sire");
+builder.Services.AddHttpClient("SunatComprobante");
+builder.Services.AddHttpClient("SunatComprobanteAuth");
 builder.Services.AddSingleton<ISunatCredentialsProvider, SunatCredentialsProvider>();
 builder.Services.AddSingleton<ISunatAuthService, SunatAuthService>();
 builder.Services.AddScoped<ISireService, SireService>();
+builder.Services.AddSingleton<ISunatComprobanteService, SunatComprobanteService>();
 
 builder.Services.Configure<FormOptions>(options =>
 {
